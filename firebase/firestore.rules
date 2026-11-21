@@ -1,0 +1,279 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    function isOwner(deviceId) {
+      return isSignedIn() && request.auth.uid == deviceId;
+    }
+
+    function validAppId(appId) {
+      return appId.matches('^[A-Za-z0-9_\\-]{1,128}$') && appId != 'new';
+    }
+
+    function validPackage(value) {
+      return value is string
+        && value.size() > 2
+        && value.size() < 200
+        && value.matches('^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$');
+    }
+
+    function validHttps(value) {
+      return value is string
+        && value.size() < 500
+        && (
+          value == ''
+          || value.matches('^https://[A-Za-z0-9._~:/?#\\[\\]@!$&()*+,;=%\\-]{3,480}$')
+        );
+    }
+
+    function validSha256(value) {
+      return value is string && value.matches('^[a-f0-9]{64}$');
+    }
+
+    function validSignature(value) {
+      return value is string && value.matches('^[a-f0-9]{64}(,[a-f0-9]{64})*$');
+    }
+
+    // Le lot de publication crée l'application et sa version ensemble.
+    // Les règles voient l'état d'avant le lot : ne pas exiger que le parent existe déjà.
+    function appShape(appId) {
+      let data = request.resource.data;
+      return validAppId(appId)
+        && data.keys().hasOnly([
+          'name',
+          'nameLower',
+          'packageName',
+          'summary',
+          'description',
+          'category',
+          'developerName',
+          'iconUrl',
+          'websiteUrl',
+          'published',
+          'featured',
+          'mandatory',
+          'latestVersionCode',
+          'latestVersionName',
+          'releaseNotes',
+          'apkStoragePath',
+          'sha256',
+          'signatureSha256',
+          'sizeBytes',
+          'minSdk',
+          'downloadCount',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 80
+        && data.nameLower == data.name.lower()
+        && validPackage(data.packageName)
+        && data.summary is string
+        && data.summary.size() <= 180
+        && data.description is string
+        && data.description.size() <= 8000
+        && data.category is string
+        && data.category.size() > 0
+        && data.category.size() <= 40
+        && data.developerName is string
+        && data.developerName.size() > 0
+        && data.developerName.size() <= 80
+        && validHttps(data.iconUrl)
+        && validHttps(data.websiteUrl)
+        && data.published is bool
+        && data.featured is bool
+        && data.mandatory is bool
+        && data.latestVersionCode is int
+        && data.latestVersionCode >= 0
+        && data.latestVersionCode < 2000000000
+        && data.latestVersionName is string
+        && data.latestVersionName.size() <= 40
+        && data.releaseNotes is string
+        && data.releaseNotes.size() <= 4000
+        && data.apkStoragePath is string
+        && data.apkStoragePath.size() <= 300
+        && data.sha256 is string
+        && (data.sha256 == '' || validSha256(data.sha256))
+        && data.signatureSha256 is string
+        && data.signatureSha256.size() <= 600
+        && (data.signatureSha256 == '' || validSignature(data.signatureSha256))
+        && data.sizeBytes is int
+        && data.sizeBytes >= 0
+        && data.sizeBytes <= 536870912
+        && data.minSdk is int
+        && data.minSdk >= 1
+        && data.minSdk <= 100
+        && data.downloadCount is int
+        && data.downloadCount >= 0
+        && data.downloadCount <= 1073741824
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time
+        && (
+          data.apkStoragePath == ''
+          || data.apkStoragePath == 'releases/' + appId + '/' + string(data.latestVersionCode) + '.apk'
+        )
+        && (
+          data.published == false
+          || (
+            data.latestVersionCode > 0
+            && data.latestVersionName.size() > 0
+            && validSha256(data.sha256)
+            && validSignature(data.signatureSha256)
+            && data.sizeBytes > 0
+            && data.apkStoragePath == 'releases/' + appId + '/' + string(data.latestVersionCode) + '.apk'
+          )
+        );
+    }
+
+    function appCreate(appId) {
+      return appShape(appId) && request.resource.data.createdAt == request.time;
+    }
+
+    function appUpdate(appId) {
+      let data = request.resource.data;
+      return appShape(appId)
+        && (
+          ('createdAt' in resource.data)
+            ? data.createdAt == resource.data.createdAt
+            : data.createdAt == request.time
+        )
+        && (
+          !('packageName' in resource.data)
+          || data.packageName == resource.data.packageName
+        )
+        && (
+          !('latestVersionCode' in resource.data)
+          || data.latestVersionCode >= resource.data.latestVersionCode
+        )
+        && (
+          !('signatureSha256' in resource.data)
+          || resource.data.signatureSha256 == ''
+          || data.signatureSha256 == resource.data.signatureSha256
+        );
+    }
+
+    function versionShape(versionId) {
+      let data = request.resource.data;
+      return versionId.matches('^[1-9][0-9]{0,9}$')
+        && data.keys().hasOnly([
+          'published',
+          'versionCode',
+          'versionName',
+          'releaseNotes',
+          'sizeBytes',
+          'mandatory',
+          'createdAt'
+        ])
+        && data.published is bool
+        && data.versionCode is int
+        && data.versionCode > 0
+        && string(data.versionCode) == versionId
+        && data.versionName is string
+        && data.versionName.size() > 0
+        && data.versionName.size() <= 40
+        && data.releaseNotes is string
+        && data.releaseNotes.size() <= 4000
+        && data.sizeBytes is int
+        && data.sizeBytes > 0
+        && data.sizeBytes <= 536870912
+        && data.mandatory is bool
+        && data.createdAt is timestamp;
+    }
+
+    function validDeviceWrite(deviceId) {
+      return request.resource.data.keys().hasOnly([
+          'deviceId',
+          'storeVersion',
+          'updatedAt',
+          'apps'
+        ])
+        && request.resource.data.deviceId == request.auth.uid
+        && request.resource.data.deviceId == deviceId
+        && request.resource.data.storeVersion is string
+        && request.resource.data.storeVersion.size() < 40
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.apps is map
+        && request.resource.data.apps.size() <= 100;
+    }
+
+    match /apps/{appId} {
+      allow read: if isAdmin() || resource.data.published == true;
+      allow create: if isAdmin() && appCreate(appId);
+      allow update: if isAdmin() && appUpdate(appId);
+      allow delete: if isAdmin();
+
+      match /versions/{versionId} {
+        allow read: if isAdmin()
+          || (
+            resource.data.published == true
+            && get(/databases/$(database)/documents/apps/$(appId)).data.published == true
+          );
+        allow create: if isAdmin()
+          && versionShape(versionId)
+          && request.resource.data.createdAt == request.time;
+        allow update: if isAdmin()
+          && versionShape(versionId)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.versionCode == resource.data.versionCode;
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /stats_events/{eventId} {
+      allow read, delete: if isAdmin();
+      allow update: if false;
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly([
+          'appId',
+          'packageName',
+          'type',
+          'versionCode',
+          'deviceId',
+          'createdAt'
+        ])
+        && request.resource.data.deviceId == request.auth.uid
+        && request.resource.data.appId is string
+        && request.resource.data.appId.size() > 0
+        && request.resource.data.appId.size() < 129
+        && validPackage(request.resource.data.packageName)
+        && request.resource.data.type in ['view', 'download', 'install', 'update']
+        && request.resource.data.versionCode is int
+        && request.resource.data.versionCode > 0
+        && request.resource.data.createdAt == request.time;
+    }
+
+    match /stats_rollups/{appId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /stats_daily/{dayId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /stats_markers/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /devices/{deviceId} {
+      allow get: if isAdmin() || isOwner(deviceId);
+      allow list: if isAdmin();
+      allow create, update: if isOwner(deviceId) && validDeviceWrite(deviceId);
+      allow delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
